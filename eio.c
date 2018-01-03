@@ -11,8 +11,6 @@
 #include <Ecore.h>
 
 static Eina_List *processesses_list, *l;
-pthread_mutex_t mutex;
-Eina_Lock mut;
 
 typedef struct process process_t;
 struct process
@@ -20,14 +18,17 @@ struct process
    int pid;
    const char * name;
    int mem;
-   double proc;
+   double cpu;
 };
 
 static Eina_Bool
 get_process_information(const char * process, process_t * proc);
 
 void
-print_process(process_t * p);
+print_process(process_t * p)
+{
+   printf("%d %s %d %f\n", p->pid, p->name, p->mem, p->cpu);
+}
 
 static Eina_Bool
 _filter_cb(void *data EINA_UNUSED, Eio_File *handler EINA_UNUSED, const char *file)
@@ -50,42 +51,21 @@ sort_cb(const void *d1, const void *d2)
 static void
 _main_cb(void *data, Eio_File *handler EINA_UNUSED, const char *file)
 {
-   process_t *p = NULL;
-   int *number_of_listed_files = (int *)data;
-
-   p = malloc(sizeof *p);
+   process_t *p;
+   p = calloc(1, sizeof(process_t));
 
    get_process_information(file, p);
-   /*pthread_mutex_lock(&mutex);*/
-   eina_lock_take(&mut);
-
-   processesses_list = eina_list_append(processesses_list, p);
-   /*processesses_list = eina_list_sorted_insert(processesses_list, sort_cb, &p);*/
-   print_process(p);
-
-   eina_lock_release(&mut);
-   /*pthread_mutex_unlock(&mutex);*/
-
-   free(p);
-   (*number_of_listed_files)++;
-}
-
-void
-print_process(process_t * p)
-{
-   printf("%d %s %d %f\n", p->pid, p->name, p->mem, p->proc);
+   processesses_list = eina_list_sorted_insert(processesses_list, sort_cb, p);
 }
 
 static void
 _done_cb(void *data, Eio_File *handler EINA_UNUSED)
 {
-   int *number_of_listed_files = (int *)data;
    process_t *w;
 
    EINA_LIST_FOREACH(processesses_list, l, w)
-       printf("%d %s %d %f\n", w->pid, w->name, w->mem, w->proc);
+      print_process(w);
 
-   printf("%s %d\n", "Number files", *number_of_listed_files);
    printf("processesses_list count: %d\n", eina_list_count(processesses_list));
 
    ecore_main_loop_quit();
@@ -126,7 +106,7 @@ get_process_information(const char * file, process_t * proc)
             proc->pid = atoi(p);
             break;
          case 1:
-            proc->name = p;
+            proc->name = eina_stringshare_add(p);
             break;
          case 13:
             utime = atol(p);
@@ -168,7 +148,6 @@ get_process_information(const char * file, process_t * proc)
       break;
    }
 
-   // CPU usage
    hertz = sysconf(_SC_CLK_TCK);
 
    f = fopen("/proc/uptime", "r+");
@@ -192,9 +171,8 @@ get_process_information(const char * file, process_t * proc)
    }
 
    ttime = utime + stime + cstime + cutime;
-
    secs = uptime - (double) (starttime / hertz);
-   proc->proc = 100 * ((double) (ttime / hertz) / secs);
+   proc->cpu = 100 * ((double) (ttime / hertz) / secs);
 
    return EINA_TRUE;
 }
@@ -202,30 +180,31 @@ get_process_information(const char * file, process_t * proc)
 int
 main(int argc, char **argv)
 {
-   int number_of_listed_files = 0;
+   process_t *w;
+   processesses_list = NULL;
 
+   eina_init();
    ecore_init();
    eio_init();
-   eina_init();
-
-   processesses_list = NULL;
-   pthread_mutex_init(&mutex, NULL);
-   eina_lock_new(&mut);
 
    if (argc < 2)
    {
-      fprintf(stderr, "You must pass a path to execute the command.\n");
-      return  -1;
+      fprintf(stderr, "Missing path\n");
+      return -1;
    }
-   eio_file_ls(argv[1], _filter_cb, _main_cb, _done_cb, _error_cb,
-           &number_of_listed_files);
+
+   eio_file_ls(argv[1], _filter_cb, _main_cb, _done_cb, _error_cb, NULL);
 
    ecore_main_loop_begin();
-   eina_list_free(processesses_list);
+   EINA_LIST_FREE(processesses_list, w)
+   {
+      eina_stringshare_del(w->name);
+      free(w);
+   }
+
    eio_shutdown();
    ecore_shutdown();
+   eina_shutdown();
 
-   eina_lock_free(&mut);
-   pthread_mutex_destroy(&mutex);
    return 0;
 }
