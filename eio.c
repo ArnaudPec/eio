@@ -12,6 +12,7 @@
 
 static Eina_List *processesses_list, *l;
 pthread_mutex_t mutex;
+Eina_Lock mut;
 
 typedef struct process process_t;
 struct process
@@ -43,7 +44,7 @@ sort_cb(const void *d1, const void *d2)
    if(!p1) return(1);
    if(!p2) return(-1);
 
-   return (p1->mem < p2->mem) ? 1 : -1;
+   return (p1->mem <= p2->mem) ? 1 : -1;
 }
 
 static void
@@ -55,13 +56,15 @@ _main_cb(void *data, Eio_File *handler EINA_UNUSED, const char *file)
    p = malloc(sizeof *p);
 
    get_process_information(file, p);
-   pthread_mutex_lock(&mutex);
+   /*pthread_mutex_lock(&mutex);*/
+   eina_lock_take(&mut);
 
    processesses_list = eina_list_append(processesses_list, p);
    /*processesses_list = eina_list_sorted_insert(processesses_list, sort_cb, &p);*/
    print_process(p);
 
-   pthread_mutex_unlock(&mutex);
+   eina_lock_release(&mut);
+   /*pthread_mutex_unlock(&mutex);*/
 
    free(p);
    (*number_of_listed_files)++;
@@ -95,34 +98,6 @@ _error_cb(void *data EINA_UNUSED, Eio_File *handler EINA_UNUSED, int error)
    ecore_main_loop_quit();
 }
 
-int
-main(int argc, char **argv)
-{
-   int number_of_listed_files = 0;
-
-   ecore_init();
-   eio_init();
-   eina_init();
-
-   processesses_list = NULL;
-   pthread_mutex_init(&mutex, NULL);
-
-   if (argc < 2)
-   {
-      fprintf(stderr, "You must pass a path to execute the command.\n");
-      return  -1;
-   }
-   eio_file_ls(argv[1], _filter_cb, _main_cb, _done_cb, _error_cb,
-           &number_of_listed_files);
-
-   ecore_main_loop_begin();
-   eina_list_free(processesses_list);
-   eio_shutdown();
-   ecore_shutdown();
-
-   return 0;
-}
-
 static Eina_Bool
 get_process_information(const char * file, process_t * proc)
 {
@@ -137,9 +112,7 @@ get_process_information(const char * file, process_t * proc)
    strcat(stat_path, "/stat");
 
    f = fopen(stat_path, "r+");
-   if (!f) {
-      return EINA_FALSE;
-   }
+   if (!f) return EINA_FALSE;
 
    while (fgets(buf, sizeof(buf), f) != NULL)
       buf[strlen(buf) - 1] = '\0';
@@ -155,19 +128,19 @@ get_process_information(const char * file, process_t * proc)
          case 1:
             proc->name = p;
             break;
-         case 14:
+         case 13:
             utime = atol(p);
             break;
-         case 15:
+         case 14:
             stime = atol(p);
             break;
-         case 16:
+         case 15:
             cutime = atol(p);
             break;
-         case 17:
+         case 16:
             cstime = atol(p);
             break;
-         case 22:
+         case 21:
             starttime = atol(p);
             break;
       }
@@ -177,9 +150,7 @@ get_process_information(const char * file, process_t * proc)
    strcat(statm_path, "/statm");
 
    f = fopen(statm_path, "r+");
-   if (!f) {
-      return EINA_FALSE;
-   }
+   if (!f) return EINA_FALSE;
 
    while (fgets(bufm, sizeof(bufm), f) != NULL)
       bufm[strlen(bufm) - 1] = '\0';
@@ -198,15 +169,10 @@ get_process_information(const char * file, process_t * proc)
    }
 
    // CPU usage
-
-   // hertz
    hertz = sysconf(_SC_CLK_TCK);
-   // uptime
 
    f = fopen("/proc/uptime", "r+");
-   if (!f) {
-      return EINA_FALSE;
-   }
+   if (!f) return EINA_FALSE;
 
    while (fgets(bufu, sizeof(bufu), f) != NULL)
       bufu[strlen(bufu) - 1] = '\0';
@@ -217,7 +183,7 @@ get_process_information(const char * file, process_t * proc)
    for (char *p = strtok(bufu," "); p != NULL; p = strtok(NULL, " "))
    {
       switch (i++) {
-         case 1:
+         case 0:
             {
                uptime = atof(p);
                break;
@@ -226,8 +192,40 @@ get_process_information(const char * file, process_t * proc)
    }
 
    ttime = utime + stime + cstime + cutime;
-   secs = (double) uptime - (double) ( (double) starttime/ (double) hertz);
-   proc->proc = 100 * ( (double) ttime / (double) hertz / secs );
+
+   secs = uptime - (double) (starttime / hertz);
+   proc->proc = 100 * ((double) (ttime / hertz) / secs);
 
    return EINA_TRUE;
+}
+
+int
+main(int argc, char **argv)
+{
+   int number_of_listed_files = 0;
+
+   ecore_init();
+   eio_init();
+   eina_init();
+
+   processesses_list = NULL;
+   pthread_mutex_init(&mutex, NULL);
+   eina_lock_new(&mut);
+
+   if (argc < 2)
+   {
+      fprintf(stderr, "You must pass a path to execute the command.\n");
+      return  -1;
+   }
+   eio_file_ls(argv[1], _filter_cb, _main_cb, _done_cb, _error_cb,
+           &number_of_listed_files);
+
+   ecore_main_loop_begin();
+   eina_list_free(processesses_list);
+   eio_shutdown();
+   ecore_shutdown();
+
+   eina_lock_free(&mut);
+   pthread_mutex_destroy(&mutex);
+   return 0;
 }
